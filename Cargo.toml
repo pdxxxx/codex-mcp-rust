@@ -1,0 +1,26 @@
+[package]
+name = "codex-mcp"
+version = "0.1.0"
+edition = "2024"
+authors = ["pdxxxx pdycat@protonmail.com"]
+description = "Rust MCP server wrapping the Codex CLI"
+license = "MIT"
+repository = "https://github.com/pdxxxx/codex-mcp-rust"
+keywords = ["mcp", "codex", "ai", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+rmcp = { version = "0.13", features = ["server", "transport-io", "macros"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-util", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+which = "7"
+
+[[bin]]
+name = "codex-mcp"
+path = "src/main.rs"

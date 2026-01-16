@@ -1,0 +1,8 @@
+.ace-tool/
+codexmcp.old/
+target/
+Cargo.lock
+*.log
+*.tmp
+*.bak
+.DS_Store
