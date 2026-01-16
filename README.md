@@ -135,6 +135,6 @@ MIT License
 
 ## 致谢
 
-- [codexmcp](https://github.com/GuDaStudio/codexmcp) - 感谢GuDaStudio项目
+- [codexmcp](https://github.com/GuDaStudio/codexmcp) - 感谢GuDaStudio提供参考
 - [rmcp](https://github.com/anthropics/rmcp) - Rust MCP SDK
 - [Codex CLI](https://github.com/openai/codex) - OpenAI Codex CLI
