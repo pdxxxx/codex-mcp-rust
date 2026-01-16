@@ -19,6 +19,7 @@ use crate::error::CodexError;
 /// Sandbox policy for model-generated commands.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+#[schemars(inline)]
 pub enum SandboxPolicy {
     /// Read-only mode, most secure (default).
     #[default]
