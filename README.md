@@ -135,5 +135,6 @@ MIT License
 
 ## 致谢
 
+- [codexmcp](https://github.com/GuDaStudio/codexmcp) - 本项目参考的原始 Python 实现
 - [rmcp](https://github.com/anthropics/rmcp) - Rust MCP SDK
 - [Codex CLI](https://github.com/openai/codex) - OpenAI Codex CLI
