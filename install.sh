@@ -5,6 +5,31 @@ REPO="pdxxxx/codex-mcp-rust"
 BINARY_NAME="codex-mcp"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 
+# 全局变量用于清理和回滚
+TMP_FILES=()
+ROLLBACK_TARGET=""
+ROLLBACK_BACKUP=""
+
+# 清理函数：失败时回滚，始终清理临时文件
+cleanup() {
+    local exit_code=$?
+    set +e
+
+    # 如果失败且有备份，尝试回滚
+    if [ $exit_code -ne 0 ] && [ -n "$ROLLBACK_BACKUP" ] && [ -n "$ROLLBACK_TARGET" ] && [ -f "$ROLLBACK_BACKUP" ]; then
+        mv -f "$ROLLBACK_BACKUP" "$ROLLBACK_TARGET" 2>/dev/null || true
+        echo -e "\033[1;33m==>\033[0m 安装失败，已回滚到之前的版本"
+    fi
+
+    # 清理临时文件
+    for f in "${TMP_FILES[@]}"; do
+        rm -f "$f" 2>/dev/null || true
+    done
+
+    return $exit_code
+}
+trap cleanup EXIT
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -16,6 +41,47 @@ print_info() { echo -e "${BLUE}==>${NC} $1"; }
 print_success() { echo -e "${GREEN}==>${NC} $1"; }
 print_warn() { echo -e "${YELLOW}==>${NC} $1"; }
 print_error() { echo -e "${RED}错误:${NC} $1"; }
+
+# 版本号规范化：去掉 v/V 前缀
+normalize_version() {
+    local version="$1"
+    version="${version#v}"
+    version="${version#V}"
+    echo "$version"
+}
+
+# 比较两个版本是否相等（规范化后比较）
+versions_equal() {
+    [ "$(normalize_version "$1")" = "$(normalize_version "$2")" ]
+}
+
+# 根据用户 Shell 输出对应的 PATH 配置说明
+print_path_instructions() {
+    local install_dir="$1"
+    # 规范化路径：去掉末尾斜杠
+    install_dir="${install_dir%/}"
+    local shell_name
+    shell_name="$(basename "${SHELL:-bash}")"
+
+    case "$shell_name" in
+        zsh)
+            echo "    请将以下内容添加到 ~/.zshrc:"
+            echo ""
+            echo "    export PATH=\"\$PATH:${install_dir}\""
+            ;;
+        fish)
+            echo "    请将以下内容添加到 ~/.config/fish/config.fish:"
+            echo ""
+            echo "    fish_add_path \"${install_dir}\""
+            ;;
+        *)
+            echo "    请将以下内容添加到 ~/.bashrc:"
+            echo ""
+            echo "    export PATH=\"\$PATH:${install_dir}\""
+            ;;
+    esac
+    echo ""
+}
 
 # 检测系统架构
 detect_platform() {
@@ -36,9 +102,20 @@ detect_platform() {
     echo "${os}-${arch}"
 }
 
-# 获取最新版本
+# 获取最新版本（优先使用 jq，降级使用 grep/sed）
 get_latest_version() {
-    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/'
+    local api_url="https://api.github.com/repos/${REPO}/releases/latest"
+    local response
+
+    if ! response=$(curl -fsSL "$api_url" 2>/dev/null); then
+        return 1
+    fi
+
+    if command -v jq &> /dev/null; then
+        echo "$response" | jq -r '.tag_name // empty'
+    else
+        echo "$response" | grep '"tag_name"' | head -1 | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+    fi
 }
 
 # 获取当前安装版本
@@ -137,7 +214,7 @@ check_update() {
     echo "最新版本: $latest_version"
     echo ""
 
-    if [ "$current_version" = "$latest_version" ]; then
+    if versions_equal "$current_version" "$latest_version"; then
         print_success "已是最新版本"
     else
         print_warn "有新版本可用"
@@ -156,27 +233,34 @@ do_install() {
     local download_url="https://github.com/${REPO}/releases/download/${version}/${asset_name}"
 
     print_info "下载 ${asset_name}..."
-    local tmp_file=$(mktemp)
+    local tmp_file
+    tmp_file=$(mktemp)
+    TMP_FILES+=("$tmp_file")
+
     if ! curl -fsSL "$download_url" -o "$tmp_file" --progress-bar; then
         print_error "下载失败"
-        rm -f "$tmp_file"
         exit 1
     fi
 
     print_info "安装到 ${install_dir}..."
     mkdir -p "$install_dir"
     local binary_path="${install_dir}/${BINARY_NAME}"
+    local backup_path="${binary_path}.bak"
 
-    # 如果是更新，先备份
+    # 如果是更新，先备份（设置回滚目标）
     if [ "$is_update" = "true" ] && [ -f "$binary_path" ]; then
-        mv "$binary_path" "${binary_path}.bak"
+        mv "$binary_path" "$backup_path"
+        ROLLBACK_TARGET="$binary_path"
+        ROLLBACK_BACKUP="$backup_path"
     fi
 
     mv "$tmp_file" "$binary_path"
     chmod +x "$binary_path"
 
-    # 删除备份
-    rm -f "${binary_path}.bak"
+    # 安装成功，删除备份并清除回滚标记
+    rm -f "$backup_path"
+    ROLLBACK_TARGET=""
+    ROLLBACK_BACKUP=""
 
     if [ "$is_update" = "true" ]; then
         print_success "更新完成: ${binary_path}"
@@ -231,7 +315,7 @@ do_update() {
     echo "    安装路径: ${binary_path}"
     echo ""
 
-    if [ "$current_version" = "$latest_version" ]; then
+    if versions_equal "$current_version" "$latest_version"; then
         print_success "已是最新版本，无需更新"
         return
     fi
@@ -300,13 +384,11 @@ main_install() {
     do_install "$install_dir" "$platform" "$version" "$is_update"
     echo ""
 
-    # 检查 PATH
-    if [[ ":$PATH:" != *":${install_dir}:"* ]]; then
+    # 检查 PATH（规范化路径后比较）
+    local install_dir_normalized="${install_dir%/}"
+    if [[ ":$PATH:" != *":${install_dir_normalized}:"* ]]; then
         print_warn "${install_dir} 不在 PATH 中"
-        echo "    请将以下内容添加到 ~/.bashrc 或 ~/.zshrc:"
-        echo ""
-        echo "    export PATH=\"\$PATH:${install_dir}\""
-        echo ""
+        print_path_instructions "$install_dir"
     fi
 
     # 询问是否配置 Claude Code
@@ -360,6 +442,12 @@ main() {
                 shift
                 ;;
             -d|--dir)
+                if [ -z "$2" ] || [[ "$2" == -* ]]; then
+                    print_error "选项 $1 需要一个目录参数"
+                    echo ""
+                    show_help
+                    exit 1
+                fi
                 install_dir="$2"
                 shift 2
                 ;;

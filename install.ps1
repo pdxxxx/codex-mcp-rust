@@ -20,6 +20,31 @@ function Write-Success { param($Message) Write-Host "==> " -ForegroundColor Gree
 function Write-Warn { param($Message) Write-Host "==> " -ForegroundColor Yellow -NoNewline; Write-Host $Message }
 function Write-Err { param($Message) Write-Host "错误: " -ForegroundColor Red -NoNewline; Write-Host $Message }
 
+# 版本号规范化：去掉 v/V 前缀
+function Normalize-Version {
+    param([string]$Version)
+
+    if ([string]::IsNullOrWhiteSpace($Version)) { return $Version }
+    return ($Version.Trim() -replace '^[vV]', '')
+}
+
+# 获取原生系统架构（区分 ARM64 和 AMD64）
+function Get-NativeArch {
+    # 优先检查 PROCESSOR_ARCHITEW6432（在 32 位进程中获取原生架构）
+    $arch = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($arch)) { $arch = $env:PROCESSOR_ARCHITECTURE }
+
+    switch ($arch) {
+        "AMD64" { return "amd64" }
+        "ARM64" { return "arm64" }
+        "x86" { return "x86" }
+        default {
+            if ([Environment]::Is64BitOperatingSystem) { return "amd64" }
+            return "x86"
+        }
+    }
+}
+
 function Get-LatestVersion {
     $response = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -UseBasicParsing
     return $response.tag_name
@@ -50,8 +75,8 @@ function Find-InstalledBinary {
         }
     }
 
-    # 检查 PATH
-    $cmd = Get-Command $BinaryName -ErrorAction SilentlyContinue
+    # 检查 PATH（仅查找可执行文件，避免匹配 alias/function）
+    $cmd = Get-Command $BinaryName -CommandType Application -ErrorAction SilentlyContinue
     if ($cmd) {
         return $cmd.Source
     }
@@ -121,13 +146,20 @@ function Invoke-Download {
 
     Write-Info "下载 $assetName..."
     $tmpFile = [System.IO.Path]::GetTempFileName() + ".exe"
+    $downloadOk = $false
+    $prevProgressPreference = $ProgressPreference
 
     try {
         $ProgressPreference = 'SilentlyContinue'
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tmpFile -UseBasicParsing
-        $ProgressPreference = 'Continue'
+        $downloadOk = $true
     } catch {
         Write-Err "下载失败: $_"
+    } finally {
+        $ProgressPreference = $prevProgressPreference
+    }
+
+    if (-not $downloadOk) {
         Remove-Item -Path $tmpFile -ErrorAction SilentlyContinue
         exit 1
     }
@@ -138,17 +170,39 @@ function Invoke-Download {
     }
 
     $binaryPath = Join-Path $InstallDir "$BinaryName.exe"
+    $backupPath = "$binaryPath.bak"
+    $didBackup = $false
 
-    # 如果是更新，先备份
-    if ($IsUpdate -and (Test-Path $binaryPath)) {
-        $backupPath = "$binaryPath.bak"
-        Move-Item -Path $binaryPath -Destination $backupPath -Force
+    try {
+        # 如果是更新，先备份
+        if ($IsUpdate -and (Test-Path $binaryPath)) {
+            Move-Item -Path $binaryPath -Destination $backupPath -Force
+            $didBackup = $true
+        }
+
+        Move-Item -Path $tmpFile -Destination $binaryPath -Force
+
+        # 安装成功，删除备份
+        if ($didBackup) {
+            Remove-Item -Path $backupPath -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # 安装失败，清理临时文件
+        Remove-Item -Path $tmpFile -ErrorAction SilentlyContinue
+
+        # 尝试回滚
+        if ($didBackup -and (Test-Path $backupPath)) {
+            try {
+                Move-Item -Path $backupPath -Destination $binaryPath -Force
+                Write-Warn "安装失败，已回滚到之前的版本: $binaryPath"
+            } catch {
+                Write-Warn "安装失败且回滚失败，请手动恢复备份: $backupPath"
+            }
+        }
+
+        Write-Err "安装失败: $_"
+        exit 1
     }
-
-    Move-Item -Path $tmpFile -Destination $binaryPath -Force
-
-    # 删除备份
-    Remove-Item -Path "$binaryPath.bak" -ErrorAction SilentlyContinue
 
     if ($IsUpdate) {
         Write-Success "更新完成: $binaryPath"
@@ -185,7 +239,7 @@ function Invoke-CheckUpdate {
     Write-Host "最新版本: $latestVersion"
     Write-Host ""
 
-    if ($currentVersion -eq $latestVersion) {
+    if ((Normalize-Version $currentVersion) -eq (Normalize-Version $latestVersion)) {
         Write-Success "已是最新版本"
     } else {
         Write-Warn "有新版本可用"
@@ -200,13 +254,16 @@ function Invoke-Update {
     )
 
     Write-Info "检测系统平台..."
-    $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "x86" }
-    Write-Host "    平台: windows-$arch"
-
-    if ($arch -ne "amd64") {
+    $nativeArch = Get-NativeArch
+    if ($nativeArch -eq "x86") {
         Write-Err "仅支持 64 位 Windows"
         exit 1
     }
+    if ($nativeArch -eq "arm64") {
+        Write-Warn "检测到 Windows ARM64，将安装 windows-amd64 版本（需系统支持 x64 仿真）"
+    }
+    $arch = "amd64"
+    Write-Host "    平台: windows-$arch"
 
     Write-Info "获取最新版本..."
     try {
@@ -243,7 +300,7 @@ function Invoke-Update {
     Write-Host "    安装路径: $binaryPath"
     Write-Host ""
 
-    if ($currentVersion -eq $latestVersion) {
+    if ((Normalize-Version $currentVersion) -eq (Normalize-Version $latestVersion)) {
         Write-Success "已是最新版本，无需更新"
         return
     }
@@ -272,13 +329,16 @@ function Invoke-Install {
 
     # 检测平台
     Write-Info "检测系统平台..."
-    $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "x86" }
-    Write-Host "    平台: windows-$arch"
-
-    if ($arch -ne "amd64") {
+    $nativeArch = Get-NativeArch
+    if ($nativeArch -eq "x86") {
         Write-Err "仅支持 64 位 Windows"
         exit 1
     }
+    if ($nativeArch -eq "arm64") {
+        Write-Warn "检测到 Windows ARM64，将安装 windows-amd64 版本（需系统支持 x64 仿真）"
+    }
+    $arch = "amd64"
+    Write-Host "    平台: windows-$arch"
 
     # 获取版本
     Write-Info "获取最新版本..."
@@ -320,11 +380,22 @@ function Invoke-Install {
 
     # 检查并添加 PATH
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($userPath -notlike "*$InstallDir*") {
+    $installDirNormalized = $InstallDir.Trim().TrimEnd('\')
+    $userPathEntries = @()
+    if (-not [string]::IsNullOrWhiteSpace($userPath)) {
+        $userPathEntries = $userPath -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    }
+    $hasInstallDir = $userPathEntries -contains $installDirNormalized
+
+    if (-not $hasInstallDir) {
         if ($SkipConfirm -or (Read-Confirm -Prompt "是否将安装目录添加到 PATH 环境变量?" -Default $true)) {
-            $newPath = "$userPath;$InstallDir"
+            $newPath = if ([string]::IsNullOrWhiteSpace($userPath)) { $installDirNormalized } else { "$userPath;$installDirNormalized" }
             [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-            $env:Path = "$env:Path;$InstallDir"
+            # 更新当前会话的 PATH
+            $sessionEntries = $env:Path -split ';' | ForEach-Object { $_.Trim().TrimEnd('\') } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            if (-not ($sessionEntries -contains $installDirNormalized)) {
+                $env:Path = if ([string]::IsNullOrWhiteSpace($env:Path)) { $installDirNormalized } else { "$env:Path;$installDirNormalized" }
+            }
             Write-Success "已添加到 PATH"
         } else {
             Write-Warn "$InstallDir 未添加到 PATH"
@@ -342,7 +413,12 @@ function Invoke-Install {
             if ($claudeCmd) {
                 try {
                     $output = & claude mcp add codex -s user --transport stdio -- $binaryPath 2>&1
-                    Write-Success "已添加到 Claude Code 配置"
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Success "已添加到 Claude Code 配置"
+                    } else {
+                        Write-Warn "添加失败 (exit code: $LASTEXITCODE)，请手动执行:"
+                        Write-Host "    claude mcp add codex -s user --transport stdio -- $binaryPath"
+                    }
                 } catch {
                     Write-Warn "添加失败，请手动执行:"
                     Write-Host "    claude mcp add codex -s user --transport stdio -- $binaryPath"
