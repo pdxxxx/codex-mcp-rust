@@ -1,0 +1,25 @@
+{
+  "name": "codex-mcp-rust",
+  "version": "0.1.0",
+  "description": "Installer for codex-mcp (Rust MCP server wrapping Codex CLI)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pdxxxx/codex-mcp-rust.git"
+  },
+  "keywords": [
+    "mcp",
+    "codex",
+    "claude",
+    "installer"
+  ],
+  "bin": {
+    "codex-mcp-rust": "bin/index.js"
+  },
+  "files": [
+    "bin/index.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -22,17 +22,18 @@
 
 ### 一键安装（推荐）
 
-**Linux / macOS:**
+使用 npx 运行交互式安装器（支持 Windows、macOS、Linux）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pdxxxx/codex-mcp-rust/main/install.sh | bash
+npx codex-mcp-rust@latest
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-irm https://raw.githubusercontent.com/pdxxxx/codex-mcp-rust/main/install.ps1 | iex
-```
+该命令会自动检测平台/架构并下载 GitHub Release 的二进制文件，提供以下交互式操作：
+1. 安装
+2. 更新
+3. 检查更新
+4. 配置 Claude Code
+5. 卸载
 
 ### 手动下载
 
