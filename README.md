@@ -90,6 +90,8 @@ claude mcp add codex -s user --transport stdio -- /path/to/codex-mcp
 | `yolo` | bool | 否 | `false` | 跳过所有审批和沙箱 |
 | `profile` | string | 否 | - | `~/.codex/config.toml` 中的配置文件名 |
 
+> 注：为兼容部分 MCP 客户端，`bool` 类型参数也支持传入字符串 `"true"`/`"false"`（大小写不敏感）。
+
 ### 响应示例
 
 ```json

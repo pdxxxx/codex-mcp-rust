@@ -1,5 +1,6 @@
 //! Codex tool implementation for the MCP server.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::process::Stdio;
 
@@ -9,6 +10,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData as McpError,
 };
 use schemars::JsonSchema;
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -59,12 +61,15 @@ pub struct CodexParams {
     pub session_id: Option<String>,
 
     /// Allow codex running outside a Git repository (useful for one-off directories).
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_bool_from_string_or_bool"
+    )]
     pub skip_git_repo_check: bool,
 
     /// Return all messages (e.g. reasoning, tool calls, etc.) from the codex session.
     /// Set to `false` by default, only the agent's final reply message is returned.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_from_string_or_bool")]
     pub return_all_messages: bool,
 
     /// Attach one or more image files to the initial prompt.
@@ -78,7 +83,7 @@ pub struct CodexParams {
 
     /// Run every command without approvals or sandboxing.
     /// Only use when `sandbox` couldn't be applied.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_bool_from_string_or_bool")]
     pub yolo: bool,
 
     /// Configuration profile name to load from `~/.codex/config.toml`.
@@ -89,6 +94,50 @@ pub struct CodexParams {
 
 fn default_true() -> bool {
     true
+}
+
+fn deserialize_bool_from_string_or_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BoolVisitor;
+
+    impl<'de> Visitor<'de> for BoolVisitor {
+        type Value = bool;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a boolean or a string \"true\"/\"false\"")
+        }
+
+        fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            let s = v.trim();
+            if s.eq_ignore_ascii_case("true") {
+                Ok(true)
+            } else if s.eq_ignore_ascii_case("false") {
+                Ok(false)
+            } else {
+                Err(E::custom(format!(
+                    "invalid boolean string: {v:?}, expected \"true\" or \"false\""
+                )))
+            }
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            self.visit_str(&v)
+        }
+    }
+
+    deserializer.deserialize_any(BoolVisitor)
 }
 
 /// Result returned by the codex tool.
@@ -460,5 +509,32 @@ mod tests {
             SandboxPolicy::DangerFullAccess.as_str(),
             "danger-full-access"
         );
+    }
+
+    #[test]
+    fn test_codex_params_bool_fields_accept_string_values() {
+        let json = serde_json::json!({
+            "PROMPT": "hello",
+            "cd": "some/path",
+            "skip_git_repo_check": "false",
+            "return_all_messages": "true",
+            "yolo": "True"
+        });
+
+        let params: CodexParams = serde_json::from_value(json).unwrap();
+        assert!(!params.skip_git_repo_check);
+        assert!(params.return_all_messages);
+        assert!(params.yolo);
+    }
+
+    #[test]
+    fn test_codex_params_bool_fields_reject_invalid_string() {
+        let json = serde_json::json!({
+            "PROMPT": "hello",
+            "cd": "some/path",
+            "yolo": "not-a-bool"
+        });
+
+        assert!(serde_json::from_value::<CodexParams>(json).is_err());
     }
 }
